@@ -64,7 +64,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106", "S107"] # fake tokens and secrets in tests are intentional
+# Fake tokens/secrets in tests are intentional; blocking file I/O in async tests is harmless.
+"tests/**" = ["S105", "S106", "S107", "ASYNC240"]
 
 [tool.mypy]
 python_version = "3.11"

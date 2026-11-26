@@ -14,7 +14,9 @@ your own Mendeley account.
 - [x] OAuth 2.0 login (`auth login / status / logout`) with tokens stored in the system keyring
 - [x] HTTP client with automatic token refresh, rate-limit retries and pagination
 - [x] `doctor` command: read-only checks of which API features work for your account
-- [ ] Library tools (search, add by DOI, folders, PDFs, BibTeX export)
+- [x] Library tools: search, add by DOI or by hand (no duplicates), folders, PDF upload,
+      BibTeX export. No tool can delete anything.
+- [ ] Tested end to end with Claude Desktop
 - [ ] Full documentation
 
 Full installation and usage instructions will be added before the first release.
