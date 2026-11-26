@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mendeley-mcp-connector"
+version = "0.1.0"
+description = "Unofficial MCP server that connects Claude (and other MCP clients) to your own Mendeley library."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Victoria Carbonell Sánchez" }]
+requires-python = ">=3.11"
+keywords = ["mcp", "mendeley", "claude", "reference-manager", "bibtex"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "mcp>=2.3,<3",
+    "httpx>=0.27,<1",
+    "keyring>=25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+mendeley-mcp-connector = "mendeley_mcp_connector.cli:main"
+
+[project.urls]
+Repository = "https://github.com/victoriacarbonell/mendeley-mcp-connector"
+Issues = "https://github.com/victoriacarbonell/mendeley-mcp-connector/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mendeley_mcp_connector"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S", "ASYNC"]
+ignore = [
+    "S101", # assert is fine in tests and for type narrowing
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S107"] # fake tokens and secrets in tests are intentional
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["respx.*"]
+ignore_missing_imports = true
