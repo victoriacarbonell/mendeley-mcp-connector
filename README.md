@@ -1,7 +1,7 @@
 # mendeley-mcp-connector
 
-> **🚧 Work in progress.** Usable, but young: tested on one Windows machine with one
-> account. Interfaces may change before 1.0. Bug reports are welcome.
+> **🚧 Work in progress.** Usable, but young: tested on Windows with Claude Desktop and
+> real libraries. Interfaces may change before 1.0. Bug reports are welcome.
 
 An [MCP](https://modelcontextprotocol.io) server that lets Claude (or any MCP client) work
 with **your own** Mendeley reference library: search it, add references by DOI or by hand,
@@ -150,6 +150,9 @@ and prints no personal data.
    again. The Mendeley tools appear in the tools menu.
 
 No credentials go in this file: the server reads them from the keyring.
+
+**After updating the connector**, quit Claude Desktop completely, open it again and start
+a **new conversation**. Existing conversations may keep the previous tool definitions.
 
 ## Tools
 
@@ -332,8 +335,8 @@ src/mendeley_mcp_connector/
 - [x] HTTP client with rate-limit retries and pagination
 - [x] `doctor` command
 - [x] Library tools (no deletion)
-- [x] Tested with Claude Desktop on Windows: create folder, add by DOI, list folder
-- [ ] Tested with a real account: manual add, PDF upload, BibTeX export, subfolders
+- [x] Tested with Claude Desktop on Windows with a real library: every tool, including
+      duplicate refusals, subfolders, PDF upload and BibTeX export without overwriting
 - [ ] Tested with a real account on macOS and Linux (CI only so far)
 - [ ] Published on PyPI
 
