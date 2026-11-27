@@ -13,8 +13,9 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import mimetypes
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -325,11 +326,16 @@ class LibraryService:
         document = await self._client.get_json(
             f"/documents/{_path_id(document_id)}", accept=media_types.DOCUMENT
         )
-        sha1 = hashlib.sha1(content, usedforsecurity=False).hexdigest()
+        # Duplicate check by size and normalised name. The API's "filehash" cannot be
+        # used: verified against the live API, it is not the SHA-1, MD5 or SHA-256 of
+        # the content (the stored bytes are identical to the upload, the hash is not).
+        # Mendeley also rewrites file names on upload ("my-paper.pdf" -> "my_paper.pdf").
+        wanted = _comparable_file_name(path.name)
         for existing in await self._files_for(document_id):
-            same_hash = existing.get("filehash") == sha1
-            same_file = existing.get("file_name") == path.name and existing.get("size") == size
-            if same_hash or same_file:
+            if (
+                existing.get("size") == size
+                and _comparable_file_name(str(existing.get("file_name") or "")) == wanted
+            ):
                 return {
                     "status": "already_attached",
                     "message": "This PDF is already attached to the document; "
@@ -337,17 +343,28 @@ class LibraryService:
                     "file": {k: existing.get(k) for k in ("id", "file_name", "size")},
                 }
 
-        response = await self._client.request(
-            "POST",
-            "/files",
-            content=content,
-            accept=media_types.FILE,
-            content_type=mimetypes.types_map.get(".pdf", "application/pdf"),
-            headers={
-                "Content-Disposition": _content_disposition(path.name),
-                "Link": f'<{API_BASE_URL}/documents/{_path_id(document_id)}>; rel="document"',
-            },
-        )
+        try:
+            response = await self._client.request(
+                "POST",
+                "/files",
+                content=content,
+                accept=media_types.FILE,
+                content_type=mimetypes.types_map.get(".pdf", "application/pdf"),
+                headers={
+                    "Content-Disposition": _content_disposition(path.name),
+                    "Link": f'<{API_BASE_URL}/documents/{_path_id(document_id)}>; rel="document"',
+                },
+            )
+        except ApiError as exc:
+            if exc.status_code not in (400, 409):
+                raise
+            raise ApiError(
+                exc.status_code,
+                f"Mendeley refused to attach this PDF ({exc.status_code}). The usual cause is "
+                "that the same file is already attached to this document, possibly under a "
+                "different name; check with get_document before trying again. "
+                f"Original response: {exc}",
+            ) from exc
         uploaded = _json_or_empty(response)
         return {
             "status": "attached",
@@ -547,6 +564,19 @@ def _read_pdf(file_path: str) -> tuple[Path, bytes]:
     if not content.startswith(b"%PDF-"):
         raise ValueError("The file does not look like a PDF (missing %PDF- header).")
     return path, content
+
+
+_NOT_NAME_CHAR = re.compile(r"[^a-z0-9.]+")
+
+
+def _comparable_file_name(name: str) -> str:
+    """Normalise a file name so an upload matches the name Mendeley stored.
+
+    Mendeley rewrites names on upload (seen: "-" becomes "_"). Case, accents,
+    and every run of characters other than letters, digits and dots are ignored.
+    """
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return _NOT_NAME_CHAR.sub("_", ascii_name.casefold()).strip("_")
 
 
 def _content_disposition(filename: str) -> str:

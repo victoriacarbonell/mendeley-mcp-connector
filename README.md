@@ -286,9 +286,12 @@ Optional environment variables:
 - **One account per computer.** Logging in again replaces the stored account.
 - **stdio only.** The server runs locally for desktop clients. The code is organised so
   that an HTTP transport can be added later, but there is none yet.
-- **Not yet confirmed against the live API:** creating subfolders (`parent_id`), and
-  whether file hashes are returned. Without hashes, duplicate PDF detection compares file
-  name and size.
+- **Duplicate PDF detection is by name and size.** Mendeley's `filehash` is not a hash of
+  the file content, so it cannot be compared, and Mendeley rewrites names on upload
+  (`my-paper.pdf` becomes `my_paper.pdf`). The check therefore ignores case, accents and
+  punctuation in names. A renamed copy of an attached PDF is not detected locally;
+  Mendeley then usually refuses the upload, and the tool says so.
+- **Not yet confirmed against the live API:** creating subfolders (`parent_id`).
 
 ## Development
 

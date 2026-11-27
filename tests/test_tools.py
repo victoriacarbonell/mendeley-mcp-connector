@@ -483,21 +483,65 @@ async def test_attach_pdf_uploads_with_link_header(harness: Harness, pdf_file: P
     assert request.content == pdf_file.read_bytes()
 
 
-@respx.mock
-async def test_attach_pdf_skips_already_attached(harness: Harness, pdf_file: Path) -> None:
+def mock_attached(name: str, size: int) -> respx.Route:
+    """Document doc-1 with one attached file; returns the upload route."""
     respx.get(f"{API}/documents/doc-1").mock(return_value=httpx.Response(200, json=LIBRARY[0]))
     respx.get(f"{API}/files").mock(
         return_value=httpx.Response(
             200,
-            json=[{"id": "f1", "file_name": pdf_file.name, "size": pdf_file.stat().st_size}],
+            # filehash deliberately unrelated to the content, as in the live API.
+            json=[{"id": "f1", "file_name": name, "size": size, "filehash": "0" * 40}],
         )
     )
-    upload = respx.post(f"{API}/files").mock(return_value=httpx.Response(201, json={}))
+    return respx.post(f"{API}/files").mock(return_value=httpx.Response(201, json={}))
+
+
+@pytest.mark.parametrize(
+    "stored_name",
+    [
+        "Pérez 2021.pdf",  # unchanged
+        "Perez_2021.pdf",  # how Mendeley rewrites names (seen live: "-" -> "_")
+        "PEREZ-2021.PDF",
+    ],
+)
+@respx.mock
+async def test_attach_pdf_skips_already_attached(
+    harness: Harness, pdf_file: Path, stored_name: str
+) -> None:
+    upload = mock_attached(stored_name, pdf_file.stat().st_size)
 
     result = await harness.call("attach_pdf", document_id="doc-1", file_path=str(pdf_file))
 
     assert result["status"] == "already_attached"
     assert not upload.called
+
+
+@respx.mock
+async def test_attach_pdf_same_name_different_size_is_uploaded(
+    harness: Harness, pdf_file: Path
+) -> None:
+    upload = mock_attached(pdf_file.name, pdf_file.stat().st_size + 1)
+
+    result = await harness.call("attach_pdf", document_id="doc-1", file_path=str(pdf_file))
+
+    assert result["status"] == "attached"
+    assert upload.called
+
+
+@respx.mock
+async def test_attach_pdf_rejected_upload_explains_likely_duplicate(
+    harness: Harness, pdf_file: Path
+) -> None:
+    respx.get(f"{API}/documents/doc-1").mock(return_value=httpx.Response(200, json=LIBRARY[0]))
+    respx.get(f"{API}/files").mock(
+        return_value=httpx.Response(200, json=[{"id": "f1", "file_name": "other.pdf", "size": 1}])
+    )
+    respx.post(f"{API}/files").mock(
+        return_value=httpx.Response(400, json={"message": "fake rejection"})
+    )
+
+    with pytest.raises(ToolError, match=r"already attached.*get_document.*fake rejection"):
+        await harness.call("attach_pdf", document_id="doc-1", file_path=str(pdf_file))
 
 
 async def test_attach_pdf_validates_file(harness: Harness, tmp_path: Path) -> None:
