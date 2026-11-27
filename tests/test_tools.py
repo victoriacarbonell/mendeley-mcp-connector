@@ -618,12 +618,70 @@ async def test_export_bibtex_reports_missing_and_writes_new_file(
         await harness.call("export_bibtex", document_ids=["doc-1"], output_path=str(target))
 
 
+FOLDER_TREE = [
+    {"id": "thesis", "name": "Thesis"},
+    {"id": "ch1", "name": "Chapter 1", "parent_id": "thesis"},
+    {"id": "ch1-a", "name": "Section A", "parent_id": "ch1"},
+    {"id": "other", "name": "Unrelated"},
+]
+FOLDER_CONTENTS = {"thesis": [], "ch1": ["doc-1"], "ch1-a": ["doc-1", "doc-3"], "other": ["doc-2"]}
+
+
+def mock_folder_tree() -> None:
+    respx.get(f"{API}/folders").mock(return_value=httpx.Response(200, json=FOLDER_TREE))
+    for folder_id, documents in FOLDER_CONTENTS.items():
+        respx.get(f"{API}/folders/{folder_id}/documents").mock(
+            return_value=httpx.Response(200, json=[{"id": d} for d in documents])
+        )
+    respx.get(url__regex=rf"{API}/documents/doc-\d").mock(
+        side_effect=lambda request: httpx.Response(
+            200, text=f"@misc{{{request.url.path.rsplit('/', 1)[1]},\n}}"
+        )
+    )
+
+
+@respx.mock
+async def test_export_bibtex_empty_folder_writes_no_file(harness: Harness, tmp_path: Path) -> None:
+    mock_folder_tree()
+    target = tmp_path / "empty.bib"
+
+    result = await harness.call("export_bibtex", folder_id="thesis", output_path=str(target))
+
+    assert result["status"] == "empty"
+    assert "include_subfolders" in result["message"]
+    assert "No file was written" in result["message"]
+    assert not target.exists()
+
+
+@respx.mock
+async def test_export_bibtex_include_subfolders(harness: Harness) -> None:
+    mock_folder_tree()
+
+    result = await harness.call("export_bibtex", folder_id="thesis", include_subfolders=True)
+
+    assert result["status"] == "exported"
+    assert result["folders_included"] == 3
+    # doc-1 is in two subfolders but exported once; the unrelated folder is left out.
+    assert result["count"] == 2
+    assert result["bibtex"].count("@misc{doc-1,") == 1
+    assert "doc-3" in result["bibtex"]
+    assert "doc-2" not in result["bibtex"]
+
+
+@respx.mock
+async def test_export_bibtex_include_subfolders_unknown_folder(harness: Harness) -> None:
+    mock_folder_tree()
+    with pytest.raises(ToolError, match="No folder with ID 'ghost'"):
+        await harness.call("export_bibtex", folder_id="ghost", include_subfolders=True)
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
         {},
         {"folder_id": "f", "document_ids": ["d"]},
         {"document_ids": ["d"], "output_path": "x.txt"},
+        {"document_ids": ["d"], "include_subfolders": True},
     ],
 )
 async def test_export_bibtex_argument_validation(

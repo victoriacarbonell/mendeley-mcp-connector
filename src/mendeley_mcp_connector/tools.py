@@ -281,10 +281,25 @@ def register_tools(server: MCPServer[Any], services: ServiceProvider) -> None:
                 "Existing files are never overwritten. If omitted, the BibTeX is returned."
             ),
         ] = None,
+        include_subfolders: Annotated[
+            bool,
+            Field(
+                description="With folder_id, also export the documents in all its "
+                "subfolders, at any depth (e.g. a thesis organised by chapter)."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
-        """Export BibTeX for a folder or a list of documents (give exactly one of them)."""
+        """Export BibTeX for a folder or a list of documents (give exactly one of them).
+
+        A folder's own documents do not include those in its subfolders; set
+        include_subfolders to add them. If there is nothing to export, the status is
+        "empty" and no file is written.
+        """
         return await _guard(
             services.library().export_bibtex(
-                folder_id=folder_id, document_ids=document_ids, output_path=output_path
+                folder_id=folder_id,
+                document_ids=document_ids,
+                output_path=output_path,
+                include_subfolders=include_subfolders,
             )
         )

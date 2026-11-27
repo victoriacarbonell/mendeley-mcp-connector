@@ -215,8 +215,15 @@ where the server runs. Only attach PDFs you have the right to store.
 
 > Export the "Deep learning" folder as BibTeX to C:\Users\me\Documents\thesis.bib
 
+> Export my "Thesis" folder, including all its subfolders, to C:\Users\me\Documents\thesis.bib
+
+As in Mendeley, a folder's documents do not include those in its subfolders. Ask for
+subfolders explicitly (`include_subfolders`) and each document is exported once, even if
+it is filed in several of them.
+
 The file must end in `.bib` and must not exist yet: existing files are never overwritten.
-Without a path, the BibTeX is returned in the chat.
+If there is nothing to export, no file is written and Claude is told why. Without a path,
+the BibTeX is returned in the chat.
 
 ## Command-line reference
 
@@ -291,7 +298,6 @@ Optional environment variables:
   (`my-paper.pdf` becomes `my_paper.pdf`). The check therefore ignores case, accents and
   punctuation in names. A renamed copy of an attached PDF is not detected locally;
   Mendeley then usually refuses the upload, and the tool says so.
-- **Not yet confirmed against the live API:** creating subfolders (`parent_id`).
 
 ## Development
 

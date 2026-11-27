@@ -384,14 +384,24 @@ class LibraryService:
         folder_id: str | None = None,
         document_ids: Sequence[str] | None = None,
         output_path: str | None = None,
+        include_subfolders: bool = False,
     ) -> dict[str, Any]:
         if bool(folder_id) == bool(document_ids):
             raise ValueError("Give either folder_id or document_ids (exactly one of them).")
-        ids = (
-            await self.folder_document_ids(folder_id)
-            if folder_id
-            else list(dict.fromkeys(document_ids or []))
-        )
+        if include_subfolders and not folder_id:
+            raise ValueError("include_subfolders only works together with folder_id.")
+        folder_ids: list[str] = []
+        if folder_id:
+            folder_ids = (
+                await self._folder_and_descendants(folder_id) if include_subfolders else [folder_id]
+            )
+            ids = []
+            for current in folder_ids:
+                ids.extend(await self.folder_document_ids(current))
+            # A document filed in several of these folders is exported once.
+            ids = list(dict.fromkeys(ids))
+        else:
+            ids = list(dict.fromkeys(document_ids or []))
         if len(ids) > MAX_EXPORT_DOCUMENTS:
             raise ValueError(
                 f"Too many documents ({len(ids)}); export at most {MAX_EXPORT_DOCUMENTS} at once."
@@ -414,12 +424,32 @@ class LibraryService:
             parts.append(bibtex.render_bibliography(to_generate).strip())
         text = "\n\n".join(p for p in parts if p) + ("\n" if parts else "")
 
+        count = len(from_api) + len(to_generate)
+        if count == 0:
+            hint = (
+                " Its subfolders are not included unless include_subfolders is true."
+                if folder_id and not include_subfolders
+                else ""
+            )
+            return {
+                "status": "empty",
+                "count": 0,
+                "message": "Nothing to export: no documents were found"
+                + (" in that folder." if folder_id else ".")
+                + hint
+                + (" No file was written." if target is not None else ""),
+                "missing_ids": missing,
+            }
+
         source = "mendeley" if not to_generate else "generated" if not from_api else "mixed"
         result: dict[str, Any] = {
-            "count": len(from_api) + len(to_generate),
+            "status": "exported",
+            "count": count,
             "source": source,
             "missing_ids": missing,
         }
+        if include_subfolders:
+            result["folders_included"] = len(folder_ids)
         if target is not None:
             await asyncio.to_thread(_write_new_file, target, text)
             result["written_to"] = str(target)
@@ -428,6 +458,25 @@ class LibraryService:
         return result
 
     # ----------------------------------------------------------------- internals
+
+    async def _folder_and_descendants(self, folder_id: str) -> list[str]:
+        """The folder followed by all its subfolders, at any depth (breadth first)."""
+        folders = await self.list_folders()
+        if not any(f["id"] == folder_id for f in folders):
+            raise NotFoundError(f"No folder with ID {folder_id!r}. Use list_folders to find it.")
+        children: dict[str, list[str]] = {}
+        for folder in folders:
+            parent = folder.get("parent_id")
+            if parent:
+                children.setdefault(str(parent), []).append(str(folder["id"]))
+        ordered: list[str] = [folder_id]
+        seen = {folder_id}
+        for current in ordered:  # the list grows while iterating: breadth-first walk
+            for child in children.get(current, []):
+                if child not in seen:  # guards against cycles in malformed data
+                    seen.add(child)
+                    ordered.append(child)
+        return ordered
 
     async def _catalog_record(self, doi: str) -> dict[str, Any]:
         not_found = NotFoundError(
