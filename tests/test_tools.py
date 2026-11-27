@@ -204,6 +204,52 @@ async def test_add_by_doi_creates_from_catalog_and_files_it(harness: Harness) ->
     assert body_of(file_into) == {"id": "doc-new"}
 
 
+def mock_generic_catalog_record() -> None:
+    mock_library()
+    respx.get(f"{API}/catalog", params={"doi": "10.5555/generic.paper"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"title": "A fake generic paper", "type": "generic", "source": "Fake Journal"}],
+        )
+    )
+
+
+@respx.mock
+async def test_add_by_doi_saves_generic_catalog_article_as_journal(harness: Harness) -> None:
+    mock_generic_catalog_record()
+    create = respx.post(f"{API}/documents").mock(
+        return_value=httpx.Response(201, json={"id": "doc-new", "type": "journal"})
+    )
+
+    result = await harness.call("add_document_by_doi", doi="10.5555/generic.paper")
+
+    assert body_of(create)["type"] == "journal"
+    assert "'generic'" in result["type_note"]
+
+
+@respx.mock
+async def test_add_by_doi_document_type_override(harness: Harness) -> None:
+    mock_generic_catalog_record()
+    create = respx.post(f"{API}/documents").mock(
+        return_value=httpx.Response(201, json={"id": "doc-new"})
+    )
+
+    result = await harness.call(
+        "add_document_by_doi", doi="10.5555/generic.paper", document_type="conference_proceedings"
+    )
+
+    assert body_of(create)["type"] == "conference_proceedings"
+    assert "type_note" not in result
+
+
+@respx.mock
+async def test_add_by_doi_rejects_unknown_type_before_any_request(harness: Harness) -> None:
+    library = mock_library()
+    with pytest.raises(ToolError, match="Unknown document type"):
+        await harness.call("add_document_by_doi", doi="10.5555/x", document_type="podcast")
+    assert not library.called
+
+
 @respx.mock
 async def test_add_by_doi_not_in_catalog_suggests_manual(harness: Harness) -> None:
     mock_library()

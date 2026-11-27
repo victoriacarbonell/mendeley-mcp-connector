@@ -26,7 +26,6 @@ from mendeley_mcp_connector.config import API_BASE_URL
 from mendeley_mcp_connector.errors import ApiError, NotFoundError
 from mendeley_mcp_connector.services import bibtex
 from mendeley_mcp_connector.services.documents import (
-    DOCUMENT_TYPES,
     EXTRA_DOCUMENT_FIELDS,
     clean_people,
     document_from_catalog,
@@ -35,6 +34,7 @@ from mendeley_mcp_connector.services.documents import (
     matches,
     normalize_doi,
     summarize,
+    validate_document_type,
 )
 
 PAGE_SIZE = 500  # documented maximum for list endpoints
@@ -115,8 +115,12 @@ class LibraryService:
             if doi_key((doc.get("identifiers") or {}).get("doi")) == key
         ]
 
-    async def add_by_doi(self, doi: str, folder_id: str | None = None) -> dict[str, Any]:
+    async def add_by_doi(
+        self, doi: str, folder_id: str | None = None, document_type: str | None = None
+    ) -> dict[str, Any]:
         doi = normalize_doi(doi)
+        if document_type is not None:
+            validate_document_type(document_type)
         existing = await self.find_by_doi(doi)
         if existing:
             result: dict[str, Any] = {
@@ -129,8 +133,14 @@ class LibraryService:
             return result
 
         record = await self._catalog_record(doi)
-        created = await self._create_document(document_from_catalog(record, doi))
+        body = document_from_catalog(record, doi, document_type)
+        created = await self._create_document(body)
         result = {"status": "added", "document": summarize(created)}
+        if document_type is None and body["type"] != record.get("type"):
+            result["type_note"] = (
+                f"The catalog reported type {record.get('type')!r}; it was saved as "
+                f"{body['type']!r}. If that is wrong, the user can change it in Mendeley."
+            )
         if folder_id:
             result["folder"] = await self.add_to_folder(folder_id, [str(created["id"])])
         return result
@@ -165,11 +175,7 @@ class LibraryService:
         title = title.strip()
         if not title:
             raise ValueError("A title is required.")
-        if document_type not in DOCUMENT_TYPES:
-            raise ValueError(
-                f"Unknown document type {document_type!r}. Use one of: "
-                + ", ".join(sorted(DOCUMENT_TYPES))
-            )
+        validate_document_type(document_type)
         if accessed is not None:
             _validate_date(accessed)
         unknown = set(extra_fields or {}) - EXTRA_DOCUMENT_FIELDS

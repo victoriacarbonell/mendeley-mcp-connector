@@ -103,6 +103,17 @@ def register_tools(server: MCPServer[Any], services: ServiceProvider) -> None:
         folder_id: Annotated[
             str | None, Field(description="Optional folder to put the document in.")
         ] = None,
+        document_type: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional Mendeley document type (e.g. journal, book_section, "
+                    "conference_proceedings) when you know it. If omitted, the catalog's "
+                    "type is used, and catalog records marked 'generic' that name a "
+                    "publication are saved as 'journal'."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Add a publication to the library by DOI, using metadata from the Mendeley catalog.
 
@@ -110,7 +121,7 @@ def register_tools(server: MCPServer[Any], services: ServiceProvider) -> None:
         so, nothing is added (status "already_in_library") and the existing document is
         returned. If the DOI is not in the catalog, use add_document_manual instead.
         """
-        return await _guard(services.library().add_by_doi(doi, folder_id))
+        return await _guard(services.library().add_by_doi(doi, folder_id, document_type))
 
     @server.tool(annotations=ADDITIVE)
     async def add_document_manual(

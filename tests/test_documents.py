@@ -6,6 +6,7 @@ from mendeley_mcp_connector.services.documents import (
     document_from_catalog,
     doi_key,
     fold,
+    infer_catalog_type,
     matches,
     normalize_doi,
     summarize,
@@ -130,7 +131,31 @@ def test_document_from_catalog_copies_only_library_fields() -> None:
     }
 
 
-def test_document_from_catalog_fixes_unknown_type_and_requires_title() -> None:
-    assert document_from_catalog({"title": "T", "type": "???"}, "10.1/x")["type"] == "journal"
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ({"type": "book_section", "source": "A Fake Book"}, "book_section"),
+        ({"type": "generic", "source": "Fake Journal"}, "journal"),
+        ({"source": "Fake Journal"}, "journal"),
+        ({"type": "???", "source": "Fake Journal"}, "journal"),
+        ({"type": "generic"}, "generic"),
+        ({"type": "generic", "source": "  "}, "generic"),
+        ({"type": "???"}, "generic"),
+    ],
+)
+def test_infer_catalog_type(record: dict[str, object], expected: str) -> None:
+    assert infer_catalog_type(record) == expected
+    assert document_from_catalog({"title": "T", **record}, "10.1234/x")["type"] == expected
+
+
+def test_document_from_catalog_type_override() -> None:
+    record = {"title": "T", "type": "generic", "source": "Fake Proceedings"}
+    body = document_from_catalog(record, "10.1234/x", "conference_proceedings")
+    assert body["type"] == "conference_proceedings"
+    with pytest.raises(ValueError, match="Unknown document type"):
+        document_from_catalog(record, "10.1234/x", "podcast")
+
+
+def test_document_from_catalog_requires_title() -> None:
     with pytest.raises(ValueError, match="no title"):
         document_from_catalog({"type": "journal"}, "10.1234/x")

@@ -225,8 +225,38 @@ def matches(
     return query is None or _all_terms_in(query, searchable_text(document))
 
 
-def document_from_catalog(record: Mapping[str, Any], doi: str) -> dict[str, Any]:
-    """Build the body of ``POST /documents`` from a catalog record."""
+def validate_document_type(document_type: str) -> str:
+    if document_type not in DOCUMENT_TYPES:
+        raise ValueError(
+            f"Unknown document type {document_type!r}. Use one of: "
+            + ", ".join(sorted(DOCUMENT_TYPES))
+            + "."
+        )
+    return document_type
+
+
+def infer_catalog_type(record: Mapping[str, Any]) -> str:
+    """Document type to use for a catalog record.
+
+    The catalog often reports journal articles as ``generic`` (seen for
+    10.1038/nature14539, a Nature article). A generic record that names the
+    publication it appeared in (``source``) is almost always a journal article,
+    so it is stored as ``journal``; anything else stays ``generic``.
+    """
+    reported = record.get("type")
+    if reported in DOCUMENT_TYPES and reported != "generic":
+        return str(reported)
+    source = record.get("source")
+    return "journal" if isinstance(source, str) and source.strip() else "generic"
+
+
+def document_from_catalog(
+    record: Mapping[str, Any], doi: str, document_type: str | None = None
+) -> dict[str, Any]:
+    """Build the body of ``POST /documents`` from a catalog record.
+
+    ``document_type`` overrides the type reported (or inferred) from the catalog.
+    """
     body: dict[str, Any] = {}
     for key in CATALOG_FIELDS_TO_COPY:
         value = record.get(key)
@@ -239,8 +269,9 @@ def document_from_catalog(record: Mapping[str, Any], doi: str) -> dict[str, Any]
                 body[key] = people
             else:
                 del body[key]
-    if body.get("type") not in DOCUMENT_TYPES:
-        body["type"] = "journal"
+    body["type"] = (
+        validate_document_type(document_type) if document_type else infer_catalog_type(record)
+    )
     identifiers = dict(body.get("identifiers") or {})
     identifiers["doi"] = doi
     body["identifiers"] = identifiers
