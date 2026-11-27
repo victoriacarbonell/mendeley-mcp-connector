@@ -190,15 +190,21 @@ class MendeleyClient:
         """
         async with self._token_lock:
             credentials = self._load_credentials()
-            must_refresh = (
-                credentials.access_token == stale_token
-                if stale_token is not None
-                else not credentials.access_token_is_fresh(self._clock())
-            )
-            if must_refresh:
-                await self._refresh(credentials)
+            if self._needs_refresh(credentials, stale_token):
+                # Another process (`auth status`, `doctor`, a second server) may have
+                # refreshed already and, if Mendeley rotated the refresh token, made our
+                # in-memory copy unusable. Start from what is stored now.
+                credentials = self._reload_credentials() or credentials
+                if self._needs_refresh(credentials, stale_token):
+                    await self._refresh_or_adopt_stored(credentials)
+                    credentials = self._load_credentials()
             assert credentials.access_token is not None
             return credentials.access_token
+
+    def _needs_refresh(self, credentials: Credentials, stale_token: str | None) -> bool:
+        if stale_token is not None:
+            return credentials.access_token == stale_token
+        return not credentials.access_token_is_fresh(self._clock())
 
     def _load_credentials(self) -> Credentials:
         if self._credentials is None:
@@ -207,6 +213,29 @@ class MendeleyClient:
                 raise NotAuthenticatedError(f"Not connected to Mendeley yet. {LOGIN_HINT}")
             self._credentials = credentials
         return self._credentials
+
+    def _reload_credentials(self) -> Credentials | None:
+        """Re-read the store, keeping the in-memory copy if that fails."""
+        try:
+            stored = self._store.load()
+        except Exception as exc:  # a locked or broken keyring must not stop the request
+            logger.warning("Could not re-read the stored Mendeley credentials: %s", exc)
+            return None
+        if stored is not None:
+            self._credentials = stored
+        return stored
+
+    async def _refresh_or_adopt_stored(self, credentials: Credentials) -> None:
+        try:
+            await self._refresh(credentials)
+        except AuthenticationExpiredError:
+            # The refresh token may have been rotated by another process between our
+            # reload and the refresh. Retry once if the store now holds a different one.
+            latest = self._reload_credentials()
+            if latest is None or latest.refresh_token == credentials.refresh_token:
+                raise
+            if not latest.access_token_is_fresh(self._clock()):
+                await self._refresh(latest)
 
     async def _refresh(self, credentials: Credentials) -> None:
         if not credentials.refresh_token:
@@ -224,7 +253,16 @@ class MendeleyClient:
         credentials.expires_at = self._clock() + (
             token.expires_in or DEFAULT_TOKEN_LIFETIME_SECONDS
         )
-        self._store.save(credentials)
+        self._credentials = credentials
+        try:
+            self._store.save(credentials)
+        except Exception as exc:  # keep working with the new token held in memory
+            logger.warning(
+                "Refreshed the Mendeley token but could not store it (%s). This session "
+                "keeps working; after a restart you may need to run `auth login` again.",
+                exc,
+            )
+            return
         logger.info("Refreshed the Mendeley access token.")
 
     # ----------------------------------------------------------------- helpers

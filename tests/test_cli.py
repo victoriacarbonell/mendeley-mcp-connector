@@ -46,6 +46,28 @@ def test_login_requires_credentials(
     assert "required" in capsys.readouterr().err
 
 
+def test_invalid_redirect_uri_is_a_clean_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MENDELEY_CLIENT_SECRET", FAKE_CLIENT_SECRET)
+    code = cli.main(
+        [
+            "auth",
+            "login",
+            "--no-browser",
+            "--client-id",
+            "1234",
+            "--redirect-uri",
+            "https://localhost:8585/callback",
+        ]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ")
+    assert "Traceback" not in err
+
+
 def test_doctor_without_login_reports_failure(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["doctor"]) == 1
     out = capsys.readouterr().out

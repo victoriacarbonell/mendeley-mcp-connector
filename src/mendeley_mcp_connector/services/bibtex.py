@@ -98,16 +98,45 @@ def to_bibtex(document: Mapping[str, Any], key: str) -> str:
     return f"@{entry_type}{{{key},\n{body}\n}}"
 
 
+_ENTRY_HEAD = re.compile(r"^\s*@\s*\w+\s*\{\s*([^,\s]*)\s*,")
+
+
 def render_bibliography(documents: Iterable[Mapping[str, Any]]) -> str:
     """BibTeX for several documents, with unique citation keys."""
-    used: dict[str, int] = {}
+    return merge_bibliography([], documents)
+
+
+def merge_bibliography(
+    api_entries: Iterable[str], documents: Iterable[Mapping[str, Any]] = ()
+) -> str:
+    """Join BibTeX returned by the API with locally generated entries.
+
+    Every citation key in the result is unique (compared case-insensitively, as
+    BibTeX and biber do): a repeated key gets a suffix a, b, c... wherever the
+    entry came from, so LaTeX never silently cites the wrong work.
+    """
+    taken: set[str] = set()
+
+    def unique(base: str) -> str:
+        base = base or "item"
+        candidate, index = base, 0
+        while candidate.casefold() in taken:
+            index += 1
+            candidate = f"{base}{_suffix(index)}"
+        taken.add(candidate.casefold())
+        return candidate
+
     entries: list[str] = []
+    for text in api_entries:
+        text = text.strip()
+        match = _ENTRY_HEAD.match(text)
+        if match:
+            key = unique(match.group(1))
+            text = text[: match.start(1)] + key + text[match.end(1) :]
+        if text:
+            entries.append(text)
     for document in documents:
-        base = citation_key(document)
-        count = used.get(base, 0)
-        used[base] = count + 1
-        key = base if count == 0 else f"{base}{_suffix(count)}"
-        entries.append(to_bibtex(document, key))
+        entries.append(to_bibtex(document, unique(citation_key(document))))
     return "\n\n".join(entries) + ("\n" if entries else "")
 
 

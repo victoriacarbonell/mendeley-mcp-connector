@@ -131,6 +131,74 @@ async def test_persistent_401_asks_to_log_in_again(
 
 
 @respx.mock
+async def test_uses_token_refreshed_by_another_process(
+    store: TokenStore, sleeper: SleepRecorder
+) -> None:
+    """`auth status` in a terminal refreshed (and rotated) while the server was running."""
+    store.save(make_credentials(expires_at=NOW + 3600))
+    token_route = respx.post(TOKEN_URL).mock(return_value=httpx.Response(400))
+    docs = respx.get(DOCS_URL).mock(return_value=httpx.Response(200, json=[]))
+
+    async with make_client(store, sleeper) as client:
+        await client.get_json("/documents", accept=media_types.DOCUMENT)  # caches credentials
+        store.save(
+            make_credentials(
+                access_token="other-process-token",
+                refresh_token="rotated-elsewhere",
+                expires_at=NOW + 3600,
+            )
+        )
+        client._credentials.expires_at = NOW - 10  # type: ignore[union-attr]
+        await client.get_json("/documents", accept=media_types.DOCUMENT)
+
+    assert not token_route.called
+    assert docs.calls.last.request.headers["Authorization"] == "Bearer other-process-token"
+
+
+@respx.mock
+async def test_refresh_retries_with_token_rotated_meanwhile(
+    store: TokenStore, sleeper: SleepRecorder
+) -> None:
+    store.save(make_credentials(expires_at=NOW - 10))
+
+    def token_endpoint(request: httpx.Request) -> httpx.Response:
+        if b"rotated-elsewhere" in request.content:
+            return httpx.Response(200, json={"access_token": "fresh", "expires_in": 3600})
+        # Simulate another process rotating the refresh token during our attempt.
+        store.save(make_credentials(refresh_token="rotated-elsewhere", expires_at=NOW - 10))
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    respx.post(TOKEN_URL).mock(side_effect=token_endpoint)
+    docs = respx.get(DOCS_URL).mock(return_value=httpx.Response(200, json=[]))
+
+    async with make_client(store, sleeper) as client:
+        await client.get_json("/documents", accept=media_types.DOCUMENT)
+
+    assert docs.calls.last.request.headers["Authorization"] == "Bearer fresh"
+
+
+@respx.mock
+async def test_failed_save_after_refresh_does_not_fail_request(
+    store: TokenStore, sleeper: SleepRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.save(make_credentials(expires_at=NOW - 10))
+    respx.post(TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "fresh", "expires_in": 3600})
+    )
+    docs = respx.get(DOCS_URL).mock(return_value=httpx.Response(200, json=[]))
+
+    def broken_save(_credentials: object) -> None:
+        raise OSError("keyring locked")
+
+    monkeypatch.setattr(store, "save", broken_save)
+    async with make_client(store, sleeper) as client:
+        await client.get_json("/documents", accept=media_types.DOCUMENT)
+        await client.get_json("/documents", accept=media_types.DOCUMENT)
+
+    assert docs.calls.last.request.headers["Authorization"] == "Bearer fresh"
+
+
+@respx.mock
 async def test_revoked_refresh_token(store: TokenStore, sleeper: SleepRecorder) -> None:
     store.save(make_credentials(expires_at=NOW - 10))
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))

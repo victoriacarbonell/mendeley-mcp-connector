@@ -24,7 +24,14 @@ from urllib.parse import quote
 from mendeley_mcp_connector.api import media_types
 from mendeley_mcp_connector.api.client import MendeleyClient
 from mendeley_mcp_connector.config import API_BASE_URL
-from mendeley_mcp_connector.errors import ApiError, NotFoundError
+from mendeley_mcp_connector.errors import (
+    ApiError,
+    AuthenticationExpiredError,
+    MendeleyError,
+    NotAuthenticatedError,
+    NotFoundError,
+    RateLimitError,
+)
 from mendeley_mcp_connector.services import bibtex
 from mendeley_mcp_connector.services.documents import (
     EXTRA_DOCUMENT_FIELDS,
@@ -43,12 +50,13 @@ MAX_PDF_BYTES = 100 * 1024 * 1024
 MAX_EXPORT_DOCUMENTS = 500
 EXPORT_CONCURRENCY = 4
 API_BIBTEX_FAILURE_STATUSES = frozenset({400, 406, 415, 501})
+# Failed API BibTeX attempts, with no success, before an export stops asking the API.
+API_BIBTEX_MAX_FAILED_PROBES = 3
 
 
 class LibraryService:
     def __init__(self, client: MendeleyClient) -> None:
         self._client = client
-        self._api_bibtex_works: bool | None = None  # learned on first export
 
     # ----------------------------------------------------------------- documents
 
@@ -248,6 +256,8 @@ class LibraryService:
         name = name.strip()
         if not name:
             raise ValueError("A folder name is required.")
+        # "" or "  " means top level, like None (list_folders has no parent_id there).
+        parent_id = (parent_id or "").strip() or None
         folders = await self.list_folders()
         if parent_id and not any(f["id"] == parent_id for f in folders):
             raise NotFoundError(f"No folder with ID {parent_id!r}. Use list_folders to find it.")
@@ -333,7 +343,8 @@ class LibraryService:
         wanted = _comparable_file_name(path.name)
         for existing in await self._files_for(document_id):
             if (
-                existing.get("size") == size
+                wanted is not None
+                and existing.get("size") == size
                 and _comparable_file_name(str(existing.get("file_name") or "")) == wanted
             ):
                 return {
@@ -386,6 +397,7 @@ class LibraryService:
         output_path: str | None = None,
         include_subfolders: bool = False,
     ) -> dict[str, Any]:
+        folder_id = (folder_id or "").strip() or None
         if bool(folder_id) == bool(document_ids):
             raise ValueError("Give either folder_id or document_ids (exactly one of them).")
         if include_subfolders and not folder_id:
@@ -409,36 +421,36 @@ class LibraryService:
         target = _check_output_path(output_path) if output_path else None
 
         semaphore = asyncio.Semaphore(EXPORT_CONCURRENCY)
+        probe = _ApiBibtexProbe()
+        failed: list[dict[str, str]] = []
 
         async def fetch(document_id: str) -> tuple[str, str | dict[str, Any] | None]:
             async with semaphore:
-                return document_id, await self._bibtex_or_metadata(document_id)
+                try:
+                    return document_id, await self._bibtex_or_metadata(document_id, probe)
+                except (NotAuthenticatedError, AuthenticationExpiredError, RateLimitError):
+                    raise  # these affect every document: stop and tell the user
+                except MendeleyError as exc:  # e.g. 403 on a group document, 5xx
+                    failed.append({"id": document_id, "error": str(exc)})
+                    return document_id, None
 
         results = await asyncio.gather(*(fetch(i) for i in ids))
+        failed_ids = {f["id"] for f in failed}
         from_api = [entry for _, entry in results if isinstance(entry, str)]
         to_generate = [entry for _, entry in results if isinstance(entry, dict)]
-        missing = [document_id for document_id, entry in results if entry is None]
-
-        parts = [entry.strip() for entry in from_api]
-        if to_generate:
-            parts.append(bibtex.render_bibliography(to_generate).strip())
-        text = "\n\n".join(p for p in parts if p) + ("\n" if parts else "")
+        missing = [i for i, entry in results if entry is None and i not in failed_ids]
+        text = bibtex.merge_bibliography(from_api, to_generate)
 
         count = len(from_api) + len(to_generate)
         if count == 0:
-            hint = (
-                " Its subfolders are not included unless include_subfolders is true."
-                if folder_id and not include_subfolders
-                else ""
-            )
             return {
                 "status": "empty",
                 "count": 0,
-                "message": "Nothing to export: no documents were found"
-                + (" in that folder." if folder_id else ".")
-                + hint
-                + (" No file was written." if target is not None else ""),
+                "message": await self._empty_export_message(
+                    folder_id, include_subfolders, len(ids), written=target is not None
+                ),
                 "missing_ids": missing,
+                "failed": failed,
             }
 
         source = "mendeley" if not to_generate else "generated" if not from_api else "mixed"
@@ -447,6 +459,7 @@ class LibraryService:
             "count": count,
             "source": source,
             "missing_ids": missing,
+            "failed": failed,
         }
         if include_subfolders:
             result["folders_included"] = len(folder_ids)
@@ -458,6 +471,24 @@ class LibraryService:
         return result
 
     # ----------------------------------------------------------------- internals
+
+    async def _empty_export_message(
+        self, folder_id: str | None, include_subfolders: bool, listed: int, *, written: bool
+    ) -> str:
+        if listed:
+            message = (
+                f"Nothing to export: none of the {listed} documents could be read "
+                "(see missing_ids and failed)."
+            )
+        elif folder_id:
+            message = "Nothing to export: the folder has no documents."
+            if not include_subfolders and any(
+                f.get("parent_id") == folder_id for f in await self.list_folders()
+            ):
+                message += " It has subfolders; set include_subfolders to export them."
+        else:
+            message = "Nothing to export."
+        return message + (" No file was written." if written else "")
 
     async def _folder_and_descendants(self, folder_id: str) -> list[str]:
         """The folder followed by all its subfolders, at any depth (breadth first)."""
@@ -547,29 +578,48 @@ class LibraryService:
             documents.append(doc)
         return documents
 
-    async def _bibtex_or_metadata(self, document_id: str) -> str | dict[str, Any] | None:
+    async def _bibtex_or_metadata(
+        self, document_id: str, probe: _ApiBibtexProbe
+    ) -> str | dict[str, Any] | None:
         """BibTeX text from the API, metadata for local generation, or None if missing."""
         path = f"/documents/{_path_id(document_id)}"
         try:
-            if self._api_bibtex_works is not False:
+            if probe.worth_trying:
                 try:
                     response = await self._client.request(
                         "GET", path, params={"view": "bib"}, accept=media_types.BIBTEX
                     )
                     if response.text.lstrip().startswith("@"):
-                        self._api_bibtex_works = True
+                        probe.successes += 1
                         return response.text
-                    self._api_bibtex_works = False
+                    probe.failures += 1
                 except ApiError as exc:
                     if exc.status_code not in API_BIBTEX_FAILURE_STATUSES:
                         raise
-                    self._api_bibtex_works = False
+                    probe.failures += 1
             data = await self._client.get_json(
                 path, accept=media_types.DOCUMENT, params={"view": "bib"}
             )
         except NotFoundError:
             return None
         return data if isinstance(data, dict) else None
+
+
+class _ApiBibtexProbe:
+    """Whether to keep asking the API for BibTeX during one export.
+
+    Once any document succeeds, a failure is treated as specific to that document
+    (it falls back to local generation alone). Only when the first few attempts
+    all fail is the API assumed not to offer BibTeX for the rest of this export.
+    """
+
+    def __init__(self) -> None:
+        self.successes = 0
+        self.failures = 0
+
+    @property
+    def worth_trying(self) -> bool:
+        return self.successes > 0 or self.failures < API_BIBTEX_MAX_FAILED_PROBES
 
 
 def _path_id(value: str) -> str:
@@ -618,19 +668,30 @@ def _read_pdf(file_path: str) -> tuple[Path, bytes]:
 _NOT_NAME_CHAR = re.compile(r"[^a-z0-9.]+")
 
 
-def _comparable_file_name(name: str) -> str:
+def _ascii_file_name(name: str) -> str:
+    """ASCII form of a file name with accents dropped: "Muñoz.pdf" -> "Munoz.pdf"."""
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+
+
+def _comparable_file_name(name: str) -> str | None:
     """Normalise a file name so an upload matches the name Mendeley stored.
 
     Mendeley rewrites names on upload (seen: "-" becomes "_"). Case, accents,
     and every run of characters other than letters, digits and dots are ignored.
+    Returns None when nothing distinctive is left (e.g. a name written only in
+    Chinese becomes ".pdf"), so such names never count as the same file.
     """
-    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    return _NOT_NAME_CHAR.sub("_", ascii_name.casefold()).strip("_")
+    key = _NOT_NAME_CHAR.sub("_", _ascii_file_name(name).casefold()).strip("_")
+    stem = key.rsplit(".", 1)[0] if "." in key else key
+    return key if any(c.isalnum() for c in stem) else None
 
 
 def _content_disposition(filename: str) -> str:
-    ascii_name = filename.encode("ascii", "replace").decode("ascii").replace('"', "")
-    ascii_name = ascii_name.replace("?", "_")
+    # The plain filename uses the same accent stripping as _comparable_file_name,
+    # so whichever form Mendeley stores, a later duplicate check can match it.
+    ascii_name = "".join(c for c in _ascii_file_name(filename) if c.isprintable() and c != '"')
+    if not any(c.isalnum() for c in ascii_name.rsplit(".", 1)[0]):
+        ascii_name = "document.pdf"
     encoded = quote(filename, safe="")
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
 

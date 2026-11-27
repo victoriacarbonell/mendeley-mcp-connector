@@ -87,7 +87,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_status())
         if args.auth_command == "logout":
             return _logout()
-    except MendeleyError as exc:
+    except (MendeleyError, ValueError, OSError) as exc:
+        # ValueError: invalid settings (redirect URL, token backend); OSError: local files.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

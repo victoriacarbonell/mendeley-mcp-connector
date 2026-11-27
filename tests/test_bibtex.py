@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from mendeley_mcp_connector.services.bibtex import citation_key, escape, render_bibliography
+import re
+
+from mendeley_mcp_connector.services.bibtex import (
+    citation_key,
+    escape,
+    merge_bibliography,
+    render_bibliography,
+)
 
 ARTICLE = {
     "type": "journal",
@@ -64,6 +71,18 @@ def test_duplicate_keys_get_suffixes() -> None:
     assert "{perez2024costs," in text
     assert "{perez2024costsa," in text
     assert "{perez2024costsb," in text
+
+
+def test_merge_makes_keys_unique_across_api_and_generated_entries() -> None:
+    api = ["@article{Smith2020,\n  title = {A}\n}", "@article{smith2020,\n  title = {B}\n}"]
+    generated = [{"citation_key": "Smith2020", "title": "C"}, {"citation_key": "Smith2020a"}]
+
+    text = merge_bibliography(api, generated)
+
+    keys = re.findall(r"^@\w+\{([^,]*),", text, flags=re.MULTILINE)
+    assert keys == ["Smith2020", "smith2020a", "Smith2020b", "Smith2020aa"]
+    assert len({k.casefold() for k in keys}) == len(keys)
+    assert "title = {B}" in text  # the API entry body is kept as it was
 
 
 def test_stored_citation_key_is_used() -> None:

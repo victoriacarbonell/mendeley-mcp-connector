@@ -387,6 +387,10 @@ async def test_create_folder_returns_existing(harness: Harness) -> None:
     create = respx.post(f"{API}/folders").mock(return_value=httpx.Response(201, json={}))
 
     result = await harness.call("create_folder", name="thesis")
+    # An empty parent_id means top level too, so it must not create a duplicate.
+    assert (await harness.call("create_folder", name="Thesis", parent_id=" "))[
+        "status"
+    ] == "already_exists"
 
     assert result["status"] == "already_exists"
     assert not create.called
@@ -478,7 +482,7 @@ async def test_attach_pdf_uploads_with_link_header(harness: Harness, pdf_file: P
     assert request.headers["Content-Type"] == "application/pdf"
     assert request.headers["Link"] == f'<{API}/documents/doc-1>; rel="document"'
     disposition = request.headers["Content-Disposition"]
-    assert disposition.startswith('attachment; filename="P_rez 2021.pdf"')
+    assert disposition.startswith('attachment; filename="Perez 2021.pdf"')
     assert unquote(disposition.split("UTF-8''")[1]) == "Pérez 2021.pdf"
     assert request.content == pdf_file.read_bytes()
 
@@ -514,6 +518,21 @@ async def test_attach_pdf_skips_already_attached(
 
     assert result["status"] == "already_attached"
     assert not upload.called
+
+
+@pytest.mark.parametrize(("local_name", "stored_name"), [("论文.pdf", "レポート.pdf")])
+@respx.mock
+async def test_attach_pdf_non_latin_names_never_count_as_duplicates(
+    harness: Harness, tmp_path: Path, local_name: str, stored_name: str
+) -> None:
+    pdf = tmp_path / local_name
+    pdf.write_bytes(b"%PDF-1.7\n% fake\n%%EOF\n")
+    upload = mock_attached(stored_name, pdf.stat().st_size)
+
+    result = await harness.call("attach_pdf", document_id="doc-1", file_path=str(pdf))
+
+    assert result["status"] == "attached"
+    assert 'filename="document.pdf"' in upload.calls.last.request.headers["Content-Disposition"]
 
 
 @respx.mock
@@ -623,8 +642,15 @@ FOLDER_TREE = [
     {"id": "ch1", "name": "Chapter 1", "parent_id": "thesis"},
     {"id": "ch1-a", "name": "Section A", "parent_id": "ch1"},
     {"id": "other", "name": "Unrelated"},
+    {"id": "leaf", "name": "Empty leaf"},
 ]
-FOLDER_CONTENTS = {"thesis": [], "ch1": ["doc-1"], "ch1-a": ["doc-1", "doc-3"], "other": ["doc-2"]}
+FOLDER_CONTENTS = {
+    "thesis": [],
+    "ch1": ["doc-1"],
+    "ch1-a": ["doc-1", "doc-3"],
+    "other": ["doc-2"],
+    "leaf": [],
+}
 
 
 def mock_folder_tree() -> None:
@@ -666,6 +692,74 @@ async def test_export_bibtex_include_subfolders(harness: Harness) -> None:
     assert result["bibtex"].count("@misc{doc-1,") == 1
     assert "doc-3" in result["bibtex"]
     assert "doc-2" not in result["bibtex"]
+
+
+@respx.mock
+async def test_export_bibtex_empty_leaf_folder_has_no_subfolder_hint(harness: Harness) -> None:
+    mock_folder_tree()
+
+    result = await harness.call("export_bibtex", folder_id="leaf")
+
+    assert result["status"] == "empty"
+    assert "subfolder" not in result["message"]
+
+
+@respx.mock
+async def test_export_bibtex_all_documents_missing_says_so(harness: Harness) -> None:
+    respx.get(f"{API}/documents/gone-1").mock(return_value=httpx.Response(404))
+
+    result = await harness.call("export_bibtex", document_ids=["gone-1"])
+
+    assert result["status"] == "empty"
+    assert "none of the 1 documents could be read" in result["message"]
+    assert result["missing_ids"] == ["gone-1"]
+
+
+@respx.mock
+async def test_export_bibtex_one_forbidden_document_does_not_sink_the_export(
+    harness: Harness,
+) -> None:
+    respx.get(f"{API}/documents/doc-1").mock(return_value=httpx.Response(200, text=API_BIBTEX))
+    respx.get(f"{API}/documents/group-doc").mock(
+        return_value=httpx.Response(403, json={"message": "fake forbidden"})
+    )
+
+    result = await harness.call("export_bibtex", document_ids=["doc-1", "group-doc"])
+
+    assert result["status"] == "exported"
+    assert result["count"] == 1
+    assert result["missing_ids"] == []
+    assert result["failed"][0]["id"] == "group-doc"
+    assert "403" in result["failed"][0]["error"]
+
+
+@respx.mock
+async def test_export_bibtex_one_bad_document_does_not_disable_api_bibtex(
+    harness: Harness,
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("doc-2") and request.headers["Accept"] == media_types.BIBTEX:
+            return httpx.Response(400, json={"message": "fake bad document"})
+        if request.headers["Accept"] == media_types.BIBTEX:
+            return httpx.Response(200, text=API_BIBTEX)
+        return httpx.Response(200, json=LIBRARY[1])
+
+    respx.get(url__regex=rf"{API}/documents/doc-\d").mock(side_effect=respond)
+
+    first = await harness.call("export_bibtex", document_ids=["doc-2"])
+    second = await harness.call("export_bibtex", document_ids=["doc-1"])
+
+    assert first["source"] == "generated"
+    assert second["source"] == "mendeley"
+
+
+@respx.mock
+async def test_export_bibtex_folder_id_whitespace_with_subfolders(harness: Harness) -> None:
+    mock_folder_tree()
+
+    result = await harness.call("export_bibtex", folder_id=" thesis ", include_subfolders=True)
+
+    assert result["count"] == 2
 
 
 @respx.mock
