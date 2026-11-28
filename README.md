@@ -73,8 +73,49 @@ the registered URL character for character.
 
 ## 2. Install
 
-The package is not on PyPI yet. Install it from GitHub with
-[pipx](https://pipx.pypa.io), which keeps it in its own environment:
+### Before you start: Python and pipx
+
+You need Python 3.11 or newer and [pipx](https://pipx.pypa.io), a tool that installs
+Python programs in their own environment. If you already have both, skip this part.
+
+**Windows**
+
+1. Download Python from <https://www.python.org/downloads/> and run the installer. On the
+   first screen, tick **Add python.exe to PATH**.
+2. Open a new PowerShell window and run:
+
+   ```powershell
+   py --version              # should print Python 3.11 or newer
+   py -m pip install --user pipx
+   py -m pipx ensurepath
+   ```
+
+**macOS** (with [Homebrew](https://brew.sh)):
+
+```bash
+brew install python pipx
+pipx ensurepath
+```
+
+**Linux** (Debian 12+, Ubuntu 23.04+; other distributions have a similar package):
+
+```bash
+sudo apt install pipx
+pipx ensurepath
+```
+
+Then **close the terminal and open a new one**, so it finds the `pipx` command.
+`pipx --version` should now print a version number.
+
+### Install the connector
+
+The package is not on PyPI yet. Install it from GitHub with pipx:
+
+```bash
+pipx install https://github.com/victoriacarbonell/mendeley-mcp-connector/archive/refs/heads/main.zip
+```
+
+If you have [Git](https://git-scm.com) installed, this works too:
 
 ```bash
 pipx install git+https://github.com/victoriacarbonell/mendeley-mcp-connector
@@ -151,8 +192,9 @@ and prints no personal data.
 
 No credentials go in this file: the server reads them from the keyring.
 
-**To update the connector**, run
-`pipx install --force git+https://github.com/victoriacarbonell/mendeley-mcp-connector`
+**To update the connector**, run the same `pipx install` command again with `--force`, for
+example
+`pipx install --force https://github.com/victoriacarbonell/mendeley-mcp-connector/archive/refs/heads/main.zip`
 (or `git pull` and `pip install .` in a clone). Then quit Claude Desktop completely, open
 it again and start a **new conversation**: existing conversations may keep the previous
 tool definitions.
